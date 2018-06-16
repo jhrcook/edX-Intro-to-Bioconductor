@@ -1,0 +1,647 @@
+---
+title: "edX Intro to Bioconductor section 2: Structure and management of genome-scale data with Bioconductor"
+author: Josh Cook
+date: 2018-06-06
+output: html_notebook
+---
+
+```{r setup, echo=FALSE, warning=FALSE, message=FALSE}
+library(knitr)
+library(BiocInstaller)
+library(Biobase)
+
+
+plotRanges <- function(x, xlim = x, main = deparse(substitute(x)),
+                       col = "black", sep = 0.5, ...)
+{
+  height <- 1
+  if (is(xlim, "Ranges"))
+    xlim <- c(min(start(xlim)), max(end(xlim)))
+  bins <- disjointBins(IRanges(start(x), end(x) + 1))
+  plot.new()
+  plot.window(xlim, c(0, max(bins)*(height + sep)))
+  ybottom <- bins * (sep + height) - height
+  rect(start(x)-0.5, ybottom, end(x)+0.5, ybottom + height, col = col, ...)
+  title(main)
+  axis(1)
+}
+
+plotGRanges = function (x, xlim = x, col = "black", sep = 0.5, xlimits = c(0, 
+    60), ...) 
+{
+    main = deparse(substitute(x))
+    ch = as.character(seqnames(x)[1])
+    x = ranges(x)
+    height <- 1
+    if (is(xlim, "Ranges")) 
+        xlim <- c(min(start(xlim)), max(end(xlim)))
+    bins <- disjointBins(IRanges(start(x), end(x) + 1))
+    plot.new()
+    plot.window(xlim = xlimits, c(0, max(bins) * (height + sep)))
+    ybottom <- bins * (sep + height) - height
+    rect(start(x) - 0.5, ybottom, end(x) + 0.5, ybottom + height, 
+        col = col, ...)
+    title(main, xlab = ch)
+    axis(1)
+}
+```
+
+# Structures tailored to microarray experiments
+## ExpressionSet: self-describing container for microarray studies
+```{r}
+library(GSE5859Subset)
+data(GSE5859Subset)
+ls()
+```
+```{r}
+head(geneAnnotation)
+```
+
+Construct an expression set:
+```{r, message=FALSE}
+rownames(geneAnnotation) <- geneAnnotation$PROBEID
+es5859 <- ExpressionSet(assayData = geneExpression)
+pData(es5859) <- sampleInfo
+fData(es5859) <- geneAnnotation
+es5859
+```
+
+Add annotations of a paper that adhere to MIAME format.
+```{r}
+library(annotate)
+mi <- pmid2MIAME("29295815")
+mi
+```
+Assign as metadata to the ExpressionSet:
+```{r}
+experimentData(es5859) <- mi
+es5859
+```
+
+## The GEOquery package: ExpressionSets from NCBI's repository
+GEO = Gene Expression Omnibus  
+Can use `GEOmetadb` to search through all the metadata available in GEO (_NOTE_: it will download a large file containing all of the data!).  
+Use the library `GEOquery` to get ExpressionSet from publications.  
+```{r, message=FALSE, cache=TRUE}
+library(GEOquery)
+glioMA = getGEO("GSE78703")
+glioMA
+```
+
+Access the European version of GEO, __EMBL-EBI__, using `ArrayExpress`. Query using `queryAE()` (does _not_ download a huge file of the metadata).
+```{r, cache=TRUE}
+library(ArrayExpress)
+sets = queryAE(keywords = "glioblastoma", species = "homo+sapiens")
+dim(sets)
+```
+To interrogate `r dim(sets)[1]` entries, can use the `DT` library to create an HTML file with a pretty table.
+```{r}
+library(DT)
+datatable(sets)
+# open the file in R Viewer tab and then export as "Save as Web Page..."
+```
+
+## ExpressionSet Assessment
+1. 
+```{r, cache=TRUE}
+library(Biobase)
+library(genefu)
+data(nkis)
+dim(demo.nkis)
+head(demo.nkis)[,1:8]
+```
+
+```{r, eval=FALSE}
+# purposefully errors
+nkes = ExpressionSet(data.nkis, phenoData=AnnotatedDataFrame(demo.nkis),
+                     featureData=AnnotatedDataFrame(annot.nkis))
+```
+2. 
+```{r}
+library(GEOquery)
+# retrieve the LSC data from GEO
+lstem = getGEO("GSE3725")
+```
+```{r}
+class(lstem)
+```
+3. 
+```{r}
+lstem = lstem[[1]]
+```
+```{r}
+dim(lstem)
+```
+4. 
+In this case, the sample characteristic of interest is the type of cell on which expression measures were taken. This can be found using the 'title' field of the pData(lstem). In other words,
+```{r}
+pData(lstem)$title 
+```
+generates a listing of the cell type descriptions. Let's ignore the first 6 samples:
+```{r}
+lstem = lstem[, -c(1:6)]
+```
+How many samples are of type L-GMP?
+```{r, eval=FALSE}
+View(pData(lstem)$title)
+```
+6. 
+We'll conclude this problem set by producing a heatmap that compares the cell types in a useful way. The data in GEO are apparently not normalized. We will use a very crude approach to achieve constant median on the log scale, after recoding (rare) negative values to zero and then adding 1 to all values.
+```{r}
+## perform an elementary normalization
+ee = exprs(lstem)
+ee[ee<0] = 0 
+eee = log(ee+1)
+## boxplot(data.frame(eee))
+meds = apply(eee,2,median)
+tt = t(t(eee)-meds)
+## boxplot(data.frame(tt))
+## assign the normalized values to ExpressionSet
+exprs(lstem) = tt
+```
+Now we will modify the feature names to be gene symbols instead of array probe names.
+```{r}
+# simplify downstream labeling with gene symbol
+featureNames(lstem) = make.names(fData(lstem)$"Gene Symbol", unique=TRUE)
+```
+The following code is somewhat complex, but it simplifies labeling of cell types by stripping away details of marker configurations.
+```{r}
+  # reformat the naming of cell types
+ct = pData(lstem)[,1]
+ct = as.character(ct)
+cct = gsub(".*(\\(.*\\)).*", "\\1", ct) 
+cct = make.unique(cct)
+cct = gsub(" enriched", "", cct)
+# use the cell types as sample names
+sampleNames(lstem) = cct
+```
+Four genes identified in the stemness signature are given in a vector below. We will use these for a small-scale heatmap.
+```{r}
+  # select some members of the stem cell signature
+inds = which(fData(lstem)$"Gene Symbol" %in% c("Stat1", "Col4a1", "Hoxa9", "Itgb5"))
+```
+Finally we can produce the heatmap.
+```{r}
+# obtain a simple heatmap
+heatmap(exprs(lstem[inds,]), Colv=NA)
+```
+What's the total number of probes interrogating the four genes of interest?
+```{r}
+length(inds)
+```
+
+# Interlude: IRanges and GRanges preparatory to SummarizedExperiment
+## Interval ranges: IRanges
+```{r}
+library(IRanges)
+ir <- IRanges(5,10)
+ir
+```
+IRanges methods are roughly divided into intra- and inter-range methods. They are all focused around controlling ranges of integers. Some of the common ones are `shift`, `narrow`, `flank`, `*`, `+`, `-`, `range`, `reduce`, `gaps`, `disjoin`.
+
+## IRanges Assessment
+1. Load the IRanges package. Define an integer range starting at 101 and ending at 200. If we use the operation *2, this will zoom in, giving us a range with half the width. What is the starting point of the resulting range?
+```{r}
+(ir <- IRanges(101, 200))
+(ir <- ir * 2)
+start(ir)
+
+```
+2. Define an integer range starting at 101 and ending at 200. If we use the operation narrow(x, start=20), what is the new starting point of the range?
+```{r}
+(ir <- IRanges(101,200))
+(ir <- narrow(ir, start=20))
+
+```
+3. Define an integer range starting at 101 and ending at 200. If we use the operation +25, what is the width of the resulting range?
+```{r}
+(ir <- IRanges(101, 200) + 25)
+```
+4. Define an IRanges with starts at 1,11,21 and ends at 3,15,27. width() gives the widths for each range. What is the sum of the widths of all the ranges?
+```{r}
+(ir <- IRanges(start=c(1,11,21), end=c(3,15,27)))
+width(ir) %>% sum
+```
+5. Define an IRanges object, x, with the following set of ranges:
+```{r}
+Starts <- c(101,106,201,211,221,301,306,311,351,361,401,411,501)
+Ends <- c(150,160,210,270,225,310,310,330,390,380,415,470,510)
+ir <- IRanges(start = Starts, end = Ends)
+```
+```{r, warning=FALSE, message=FALSE}
+plotRanges(ir)
+```
+What is the total width from 101 to 510 which is not covered by ranges in x?
+```{r}
+gaps(ir) %>% width %>% sum
+```
+6. How many disjoint ranges are contained within the ranges in `ir` from the previous question? By disjoint ranges, we mean the following: for two ranges [1,10] and [6,15], there are three disjoint ranges contained within: [1,5], [6,10], and [11,15].
+```{r}
+length(disjoin(ir))
+```
+7. An intra-range function we didn't show in the video is resize(). Set up a grid of 2 stacked plots:
+```{r}
+par(mfrow=c(2,1))
+```
+Now use `plotRanges()` to plot the original `ir`, and `resize(ir,1)`. You will have to set the xlim to make sure that the plots line up vertically. You can use `plotRanges(ir, xlim=c(0,600))` for example.  
+What is the best description for the operation `resize(ir,1)`?
+```{r}
+plotRanges(ir, xlim=c(0,600))
+plotRanges(resize(ir,1), xlim=c(0,600))
+```
+
+## Genomic ranges: GRanges
+
+```{r}
+library(GenomicRanges)
+gr <- GRanges(seqnames = "chrZ", 
+              IRanges(start = c(5,10), end = c(35,45)),
+              strand = "+",
+              seqlengths = c(chrZ=100L))
+gr
+```
+
+Can move the range:
+
+```{r}
+shift(gr, 10)
+```
+
+If you shift off the chromosome `chrZ`:
+
+```{r}
+shift(gr, 80)
+```
+
+Can use trim to stop at the end of the chromosome:
+
+```{r}
+trim(shift(gr, 80))
+```
+
+Access the metadata columns:
+
+```{r}
+# they are currently empty
+mcols(gr)
+```
+
+Add metadata:
+
+```{r}
+mcols(gr)$value <- c(-1,4)
+mcols(gr)$anothercol <- c("a","b")
+gr
+```
+
+Can make a list of GRange objects. Removing the two columns of metadata from `gr` is not required; the same columns would be applied to `gr2` within `grl` and be populated with `NA`.
+
+```{r}
+mcols(gr)$value <- mcols(gr)$anothercol <- NULL
+gr2 <- GRanges("chrZ", IRanges(11:13, 51:53))
+grl <- GRangesList(gr, gr2)
+```
+
+An example use of `GRangesList()` is to hold the exons for transcripts. 
+
+## findOverlaps and %over%
+
+```{r}
+(gr1 <- GRanges("chrZ",IRanges(c(1,11,21,31,41),width=5),strand="*"))
+(gr2 <- GRanges("chrZ",IRanges(c(19,33),c(38,35)),strand="*"))
+```
+
+`findOverlaps` returns a `Hits` object which contains the information about which ranges in the `query` (the first argument) overlapped which ranges in the `subject` (the second argument). *There are many options for specifying what kind of overlaps should be counted.*
+
+```{r}
+(fo <- findOverlaps(gr1, gr2))
+```
+
+Can get inidividual data using the following functions:
+
+```{r}
+queryHits(fo)
+subjectHits(fo)
+```
+
+Can also use `%over%` to get a logical vector of overlaps used for subsetting the query to get the sequeces that had overlaps.
+
+```{r}
+gr1[gr1 %over% gr2]
+```
+
+Can ingore a strand using the `ingore.strand` argument:
+
+```{r}
+gr1 <- GRanges("chrZ",IRanges(1,10),strand="+")
+gr2 <- GRanges("chrZ",IRanges(1,10),strand="-")
+gr1 %over% gr2
+```
+
+`Rle` (in `baseR`) stands for "run-length encoding", which is a form of compression for repetitive data. Instead of storing `[1,1,1,1]`, we would store the number 1, and the number of repeats 4. *The more repetitive the data, the greater the compression with Rle.*
+
+```{r}
+(r <- Rle(c(1,1,1,0,0,-2,-2,-2,rep(-1,20))))
+str(r)
+as.numeric(r)
+```
+
+A `Views` object (in `IRanges`) can be thought of as "windows" looking into a sequence.
+
+```{r}
+(v <- Views(r, start=c(4,2), end=c(7,6)))
+```
+
+Note that the internal structure of the `Views` object is just the original object, and the `IRanges` which specify the windows. The great benefit of `Views` is when the original object is not stored in memory, in which case the `Views` object is a lightweight class which helps us reference subsequences, without having to load the entire sequence into memory.
+
+```{r}
+str(v)
+```
+
+## GRanges Assessment
+
+The GRanges object in the GenomicRanges package extends the concept of interval ranges in two major ways. The ranges are now also identified by:
+
+1. the chromosome we are referring to (in Bioconductor, this is called "seqnames")
+2. the strand of the DNA we are referring to ("+" or "-"). No strand is labelled with a star, "*".
+
+```{r}
+x = GRanges("chr1", IRanges(c(1,101),c(50,150)), strand=c("+","-"))
+```
+
+Plot `x` and `resize(x,1)`:
+
+```{r}
+par(2,1)
+plotGRanges(x)
+plotGRanges(resize(x,1))
+```
+
+2. Suppose we have two different sets of ranges, which overlap somewhat but not entirely. This is the case for many genes, in which there are different versions of transcripts, also called isoforms. The different transcripts consist of exons which end up in the final mRNA molecule, and a number of transcripts can share exons or have exons which are overlapping but not identical ranges. We'll start with a toy example, and learn how to load real genes later:
+
+```{r}
+x = GRanges("chr1", IRanges(c(101,201,401,501),c(150,250,450,550)), strand="+")
+y = GRanges("chr1", IRanges(c(101,221,301,401,541),c(150,250,350,470,550)), strand="+")
+```
+
+```{r}
+par(mfrow=c(2,1))
+plotGRanges(x)
+plotGRanges(y)
+```
+
+If we want to keep the information about which set the ranges belong to, we could combine the two GRanges into a GRangesList: `GRangesList(x,y)`. However, if we want to combine them into a single GRanges, we can use c(): `c(x,y)`. Find the total width which is covered by ranges in both x and y. Hint: use c(), disjoin() and %over%.
+```{r}
+disjoined = disjoin(c(x,y))
+in.both = disjoined %over% x & disjoined %over% y
+sum(width(disjoined[ in.both ]))
+```
+
+3. What is the total width which is in x or y but not in both?
+
+```{r}
+xyonly <- disjoined[!in.both]
+sum(width(xyonly))
+```
+
+4. Define a new genomic range, `z`, which covers `range(ranges(x))` but has the opposite strand. What is the number of ranges in `x` which overlap `z` according to the %over% command?
+
+```{r}
+z <- GRanges("chr1", IRanges(ranges(x)), strand = "-")
+sum(z %over% x)
+```
+
+**Note:** The %over% command is specific to strand. If we want to find the ranges regardless of strand, we need to assign a strand of `*`.
+
+## Operating on GRanges
+
+Let's define a new `IRanges` object:
+
+```{r}
+ir <- IRanges(c(3, 8, 14, 15, 19, 34, 40),
+              width = c(12, 6, 6, 15, 6, 2, 7))
+```
+
+
+Using `reduce`:
+
+```{r}
+par(mfrow=c(2,1), mar=c(4,2,2,2))
+plotRanges(ir)
+plotRanges(reduce(ir))
+```
+
+Compared to `disjoin`:
+
+```{r}
+par(mfrow=c(2,1), mar=c(4,2,2,2))
+plotRanges(ir)
+plotRanges(disjoin(ir))
+```
+
+The `reduce` function is good for reducing completexity.  
+Using the `gaps` function to find missing regions (eg. find the introns when given exons).
+
+```{r}
+par(mfrow=c(2,1), mar=c(4,2,2,2))
+plotRanges(ir, xlim=c(0, 60))
+plotRanges(gaps(ir), xlim=c(0,60))
+```
+
+```{r}
+library(GenomicRanges)
+gir <- GRanges(seqnames="chr1", ir)
+gir
+```
+
+Add some metadata:
+
+```{r}
+strand(gir) <- c(rep("+", 4), rep("-",3))
+genome(gir) <- "hg19"
+gir
+seqinfo(gir)
+plotGRanges(gir)
+```
+
+Resize each range to it's +1 nucleotide. *Is strand specific!*
+
+```{r}
+plotGRanges(resize(gir,1), xlim=c(0,60), col="green")
+```
+
+We can make a plot of the "promoters" as the 3 bp upstream of the start sites.
+
+```{r}
+par(mfrow=c(2,1), mar=c(4,2,2,2))
+plotGRanges(gir, xlim=c(0,60))
+plotGRanges(flank(gir, 3), xlim=c(0,60), col='purple')
+```
+
+Or can get the flank at the end using `start=F` option in `flank`.
+
+```{r}
+par(mfrow=c(2,1), mar=c(4,2,2,2))
+plotGRanges(gir, xlim=c(0,60))
+plotGRanges(flank(gir, 2, start=F), xlim=c(0,60), col='brown')
+```
+
+## Finding Overlaps
+
+Load the libraries and data for this section.
+
+```{r}
+library(GenomicFeatures)
+library(GenomicRanges)
+library(IRanges)
+library(ph525x)
+
+load("HepG2.rda")  # cell line of liver origin
+load("GM12878.rda")  # immortalized B cell
+
+```
+
+Using `findOverlaps` to find overlaps between `GRange` objects.
+```{r}
+res <- findOverlaps(query = HepG2, subject = GM12878)
+res
+```
+
+To get all of the "hits", i.e. the ranges of the `query` that overlapped the `subject`, **must** use the function `queryHits` = cannot just subset `res`!
+
+```{r}
+index <- queryHits(res)
+erbs <- HepG2[index, ]
+erbs
+```
+
+To extract only the ranges (leaving the metadata behind):
+
+```{r}
+erbs <- granges(erbs)
+erbs
+```
+
+## Finding Overlaps Assessment
+
+1. Where does the 17th HepG2 region start?
+
+```{r}
+HepG2[17,]
+```
+
+2. Use `distanceToNearest` to find the closest region in GM12878 to the 17th region in HepG2. What is the start site of this region?
+
+```{r}
+nearest(HepG2[17,], GM12878) %>% GM12878[.,]
+```
+
+3. What is the distance between the 17th region of HepG2 and its closest region in GM12878?
+
+```{r}
+distanceToNearest(HepG2[17,], GM12878)
+```
+
+4. For each region in HepG2 find the closest region in GM12878 and record the distance. What proportion of these distances are smaller than 2000 base pairs? Distance is a metadata column on the `Hits` object, so consider `mcols()`.
+
+```{r}
+dtn <- distanceToNearest(HepG2, GM12878) %>% mcols
+sum(dtn$distance < 2000) / length(dtn$distance)
+```
+
+# Structure for general feature sets: SummarizedExperiment
+## Introduction to the SummarizedExperiment container
+
+`SummarizedExperiment` is meant as the successor for `ExpressionSet`. There are many methods written for it that can be found using the command `methods(class="SummarizedExperiment")`.  
+
+Example to illustrate how to use this container:
+
+```{r, message=FALSE, warning=FALSE}
+library(airway)
+data(airway)
+airway
+```
+
+```{r}
+assay(airway[1:4,1:5]) 
+```
+
+```{r}
+rowRanges(airway)
+```
+
+## DataFrame and SummarizedExperiment assessment
+
+1. The `erma` package includes detailed information on cell lines analyzed in the epigenomics road map project. You can query anatomic locations from which samples were derived as follows:
+
+```{r, message=FALSE, warning=FALSE}
+library(erma)
+ee = makeErmaSet()
+class(colData(ee))
+length(names(colData(ee)))  # lots of attributes!
+table(ee$ANATOMY)
+```
+
+2. Use the ErmaSet instance generated in the previous problem. Consider the code
+
+```{r}
+mydf = colData(ee)[,1:10]
+getClass("DataFrame")
+mydf$demomat = matrix(0, nrow=nrow(mydf), ncol=5)
+dim(mydf$demomat)
+dim(mydf)
+dim(data.frame(mydf))
+```
+
+## Memory-sparing approaches with HDF5 and indexed files
+
+### External HDF5
+
+Use the "garbage collector" functoin`gc` to see memory usage in R.  
+
+The `HDF5Array` package to save RAM. Use `writeHDF5Array(var, filename, varname)` to save a variable `var` to a file `filename` as the variable `varname`. Then use `x <- HDF5Array(filename, varname)` to get a *reference* to the data. The function `saveHDF5SummarizedExperiment` can do the same process for a `SummarizedExperiment` object.  
+
+### GenomicFiles: application to many BAM files
+
+The package `GenomicFiles` has functions for the parallel use of several files. This is especially useful with large data files. 
+
+### Multiple BED files: a slice of the epigenomics roadmap
+
+Can handle this epigenomic data using the `erma` package.
+
+### External data resources assessment
+
+1. Let's use the airway package again to obtain a SummarizedExperiment, saving it as HDF5 in a temporary location.
+```{r}
+library(airway)
+library(HDF5Array)
+td = tempfile()
+saveHDF5SummarizedExperiment(airway, td)
+```
+After this save operation completes, what is
+```{r}
+length(dir(td))
+```
+
+2. Now issue the command
+
+```{r}
+X  = readRDS(dir(td, full=TRUE)[2]) 
+```
+
+What is the class of X?
+
+```{r}
+class(X)
+```
+
+# Multi-omics solutions; role of cloud resources
+
+## Collecting multiple molecular assay outputs on a set of samples
+
+Can handle multi-omic data in the `MultiAssayExperiment` package from Bioconductor. Here is a [link](http://tinyurl.com/MAEOurls) to a Google Spreadsheet where a lab has created `MultiAssayExperiment` object for the TCGA projects.
+
+```{r}
+library(MultiAssayExperiment)
+```
+
